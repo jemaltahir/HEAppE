@@ -4,4 +4,10 @@ kind: ConfigMap
 metadata:
   name: heappe-config
 data:
-  TZ: "UTC"
+  TZ: "Europe/Prague"
+  ASPNETCORE_RUNTYPE_ENVIRONMENT: "Production"
+  HOST_MSSQL_PORT: "1433"
+  HOST_DATA_STAGING_PORT: "8080"
+  HOST_APP_PORT: "80"
+  SSH_AUTH_SOCK: "/app/shared/agentsocket"
+  VAULT_ADDR: "http://vault-service:8200"

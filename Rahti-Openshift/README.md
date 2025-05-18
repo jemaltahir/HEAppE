@@ -90,3 +90,9 @@ The deployment consists of the following components:
    oc apply -f sshagent-deployment.yaml
 
    ```
+### Deployment  Staging data Steps
+
+```
+oc create secret generic datastaging-secret \
+  --from-literal=DATABASE_CONNECTION="Server=mssql;Database=HEAppE;User Id=sa;Password=HEAppE@123;"
+```

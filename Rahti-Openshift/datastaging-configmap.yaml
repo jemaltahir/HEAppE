@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: datastaging-appsettings
+data:
+  appsettings.Production.json: |
+    {
+      "ConnectionStrings": {
+        "DATABASE_CONNECTION": "Server=mssql;Database=HEAppE;User Id=sa;Password=HEAppE@123;"
+      }
+    }

@@ -1,0 +1,139 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: datastaging-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: datastaging-api
+  template:
+    metadata:
+      labels:
+        app: datastaging-api
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: datastaging-api
+        image: image-registry.openshift-image-registry.svc:5000/test-heappe-app/datastaging-api:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+        env:
+        - name: ASPNETCORE_RUNTYPE_ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: heappe-config
+              key: ASPNETCORE_RUNTYPE_ENVIRONMENT
+        - name: TZ
+          valueFrom:
+            configMapKeyRef:
+              name: heappe-config
+              key: TZ
+        - name: SSH_AUTH_SOCK
+          valueFrom:
+            configMapKeyRef:
+              name: heappe-config
+              key: SSH_AUTH_SOCK
+        - name: VAULT_ADDR
+          valueFrom:
+            configMapKeyRef:
+              name: heappe-config
+              key: VAULT_ADDR
+        - name: DATABASE_CONNECTION
+          valueFrom:
+            secretKeyRef:
+              name: datastaging-secret
+              key: DATABASE_CONNECTION
+        volumeMounts:
+        - name: app-shared
+          mountPath: /app/shared
+        - name: app-sftp-temp
+          mountPath: /sftp
+        - name: ssh-agent-socket
+          mountPath: /app/shared/agentsocket
+        - name: heappe-config-vol
+          mountPath: /opt/heappe/confs
+        - name: appsettings-volume
+          mountPath: /app/appsettings.Production.json
+          subPath: appsettings.Production.json
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      volumes:
+      - name: app-shared
+        persistentVolumeClaim:
+          claimName: app-shared
+      - name: app-sftp-temp
+        persistentVolumeClaim:
+          claimName: app-sftp-temp
+      - name: ssh-agent-socket
+        emptyDir:
+          medium: Memory
+      - name: heappe-config-vol
+        configMap:
+          name: heappe-config
+      - name: appsettings-volume
+        configMap:
+          name: datastaging-appsettings
+          items:
+          - key: appsettings.Production.json
+            path: appsettings.Production.json
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: datastaging-api-service
+spec:
+  selector:
+    app: datastaging-api
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  type: ClusterIP
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: datastaging-api
+  annotations:
+    haproxy.router.openshift.io/timeout: 30s
+spec:
+  to:
+    kind: Service
+    name: datastaging-api-service
+  port:
+    targetPort: http
