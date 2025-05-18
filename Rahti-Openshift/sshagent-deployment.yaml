@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sshagent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sshagent
+  template:
+    metadata:
+      labels:
+        app: sshagent
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: sshagent
+        image: image-registry.openshift-image-registry.svc:5000/test-heappe-app/sshagent:latest
+        imagePullPolicy: Always
+        command: ["bash", "./scripts/init.sh"]
+        env:
+        - name: TZ
+          valueFrom:
+            configMapKeyRef:
+              name: heappe-config
+              key: TZ
+        - name: SSH_AUTH_SOCK
+          value: "/app/shared/agentsocket"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: app-shared
+          mountPath: /app/shared
+        - name: sshagent-keys
+          mountPath: /opt/sshagent_keys
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        livenessProbe:
+          exec:
+            command: ["ssh-add", "-l"]
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command: ["ssh-add", "-l"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      volumes:
+      - name: app-shared
+        emptyDir:
+          medium: Memory
+        sizeLimit: 1Gi
+      - name: sshagent-keys
+        persistentVolumeClaim:
+          claimName: sshagent-keys
