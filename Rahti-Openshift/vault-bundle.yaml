@@ -1,0 +1,198 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vault
+  template:
+    metadata:
+      labels:
+        app: vault
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: vault
+        image: hashicorp/vault:1.17.3
+        command: ["vault"]
+        args: ["server"]
+        ports:
+        - containerPort: 8200
+        env:
+        - name: VAULT_ADDR
+          value: "http://localhost:8200"
+        - name: VAULT_API_ADDR
+          value: "http://localhost:8200"
+        volumeMounts:
+        - name: vault-data
+          mountPath: /vault/data
+        - name: vault-config
+          mountPath: /vault/config
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "400m"
+        livenessProbe:
+          httpGet:
+            path: /v1/sys/health
+            port: 8200
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /v1/sys/health
+            port: 8200
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      volumes:
+      - name: vault-data
+        persistentVolumeClaim:
+          claimName: vault-data
+      - name: vault-config
+        configMap:
+          name: vault-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vault-agent
+  template:
+    metadata:
+      labels:
+        app: vault-agent
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: vault-agent
+        image: hashicorp/vault:1.17.3
+        command: ["vault"]
+        args: ["agent", "-config=/vault/config/vault-agent.hcl", "-log-level=debug"]
+        ports:
+        - containerPort: 8100
+        volumeMounts:
+        - name: vault-agent-data
+          mountPath: /vault/agent
+        - name: vault-agent-config
+          mountPath: /vault/config
+        - name: vault-logs
+          mountPath: /vault/logs
+        - name: vault-templates
+          mountPath: /vault/config/templates
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      volumes:
+      - name: vault-agent-data
+        persistentVolumeClaim:
+          claimName: vault-agent-data
+      - name: vault-agent-config
+        configMap:
+          name: vault-agent-config
+      - name: vault-logs
+        persistentVolumeClaim:
+          claimName: vault-logs
+      - name: vault-templates
+        configMap:
+          name: vault-templates
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vault-init
+spec:
+  schedule: "*/5 * * * *"  # Run every 5 minutes
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: vault-init
+            image: hashicorp/vault:1.17.3
+            command: ["/bin/sh", "-c"]
+            args:
+            - |
+              set -e
+              until vault status; do
+                echo "Waiting for vault..."
+                sleep 2
+              done
+              
+              if ! vault status | grep -q "Initialized.*true"; then
+                echo "Initializing vault..."
+                vault operator init -format=json > /vault/data/init.json
+                
+                # Extract keys
+                UNSEAL_KEY=$(jq -r '.unseal_keys_b64[0]' /vault/data/init.json)
+                ROOT_TOKEN=$(jq -r '.root_token' /vault/data/init.json)
+                
+                # Unseal vault
+                vault operator unseal $UNSEAL_KEY
+                
+                # Login and configure
+                vault login $ROOT_TOKEN
+                vault secrets enable -version=2 kv
+              fi
+            env:
+            - name: VAULT_ADDR
+              value: "http://vault-service:8200"
+            volumeMounts:
+            - name: vault-data
+              mountPath: /vault/data
+          restartPolicy: OnFailure
+          volumes:
+          - name: vault-data
+            persistentVolumeClaim:
+              claimName: vault-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-service
+spec:
+  selector:
+    app: vault
+  ports:
+  - name: http
+    port: 8200
+    targetPort: 8200
+    protocol: TCP
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-agent-service
+spec:
+  selector:
+    app: vault-agent
+  ports:
+  - name: http
+    port: 8100
+    targetPort: 8100
+    protocol: TCP
+  type: ClusterIP 

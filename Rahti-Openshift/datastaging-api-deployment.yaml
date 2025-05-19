@@ -14,6 +14,8 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        runAsUser: 1001770000
+        fsGroup: 1001770000
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -67,30 +69,6 @@ spec:
           limits:
             memory: "1Gi"
             cpu: "500m"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8080
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 8080
-          initialDelaySeconds: 5
-          periodSeconds: 5
-          timeoutSeconds: 3
-          failureThreshold: 3
-        startupProbe:
-          httpGet:
-            path: /health
-            port: 8080
-          initialDelaySeconds: 10
-          periodSeconds: 5
-          timeoutSeconds: 3
-          failureThreshold: 3
       volumes:
       - name: app-shared
         persistentVolumeClaim:
