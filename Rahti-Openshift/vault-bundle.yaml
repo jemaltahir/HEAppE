@@ -1,3 +1,4 @@
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -14,13 +15,13 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault          
       containers:
       - name: vault
-        image: hashicorp/vault:1.17.3
+        image: "image-registry.openshift-image-registry.svc:5000/test-heappe-app/hashicorp-vault:1.17.3"
         command: ["vault"]
-        args: ["server"]
+        args: ["server", "-config=/vault/config/vault.hcl", "-log-level=debug"]
         ports:
         - containerPort: 8200
         env:
@@ -28,6 +29,36 @@ spec:
           value: "http://localhost:8200"
         - name: VAULT_API_ADDR
           value: "http://localhost:8200"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        lifecycle:
+          postStart:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - |
+                echo "[vault-init] Waiting for Vault to become ready..."
+                until wget -q --spider http://localhost:8200/v1/sys/health; do
+                  echo "[vault-init] Vault not yet reachable, waiting..."
+                  sleep 2
+                done
+                echo "[vault-init] Vault is reachable."
+
+                if vault status | grep -q 'Initialized.*true'; then
+                  echo "[vault-init] Already initialized."
+                  exit 0
+                fi
+
+                echo "[vault-init] Initializing Vault..."
+                vault operator init -format=json > /vault/data/init.json
+                UNSEAL_KEY=$(jq -r '.unseal_keys_b64[0]' /vault/data/init.json)
+                ROOT_TOKEN=$(jq -r '.root_token' /vault/data/init.json)
+                vault operator unseal $UNSEAL_KEY
+                vault login $ROOT_TOKEN
+                vault secrets enable -version=2 kv
         volumeMounts:
         - name: vault-data
           mountPath: /vault/data
@@ -42,7 +73,7 @@ spec:
             cpu: "400m"
         livenessProbe:
           httpGet:
-            path: /v1/sys/health
+            path: /v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204
             port: 8200
           initialDelaySeconds: 30
           periodSeconds: 10
@@ -50,7 +81,7 @@ spec:
           failureThreshold: 3
         readinessProbe:
           httpGet:
-            path: /v1/sys/health
+            path: /v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204
             port: 8200
           initialDelaySeconds: 5
           periodSeconds: 5
@@ -58,8 +89,7 @@ spec:
           failureThreshold: 3
       volumes:
       - name: vault-data
-        persistentVolumeClaim:
-          claimName: vault-data
+        emptyDir: {}
       - name: vault-config
         configMap:
           name: vault-config
@@ -80,15 +110,19 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: vault-agent
-        image: hashicorp/vault:1.17.3
+        image: "image-registry.openshift-image-registry.svc:5000/test-heappe-app/hashicorp-vault:1.17.3"
         command: ["vault"]
         args: ["agent", "-config=/vault/config/vault-agent.hcl", "-log-level=debug"]
         ports:
         - containerPort: 8100
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
         volumeMounts:
         - name: vault-agent-data
           mountPath: /vault/agent
@@ -119,56 +153,58 @@ spec:
         configMap:
           name: vault-templates
 ---
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: vault-init
-spec:
-  schedule: "*/5 * * * *"  # Run every 5 minutes
-  concurrencyPolicy: Forbid
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          containers:
-          - name: vault-init
-            image: hashicorp/vault:1.17.3
-            command: ["/bin/sh", "-c"]
-            args:
-            - |
-              set -e
-              until vault status; do
-                echo "Waiting for vault..."
-                sleep 2
-              done
-              
-              if ! vault status | grep -q "Initialized.*true"; then
-                echo "Initializing vault..."
-                vault operator init -format=json > /vault/data/init.json
+# apiVersion: batch/v1
+# kind: CronJob
+# metadata:
+#   name: vault-init
+# spec:
+#   schedule: "*/2 * * * *"  # Adjust as needed
+#   concurrencyPolicy: Forbid
+#   jobTemplate:
+#     spec:
+#       template:
+#         spec:
+#           restartPolicy: OnFailure
+#           containers:
+#           - name: vault-init
+#             image: "image-registry.openshift-image-registry.svc:5000/test-heappe-app/hashicorp-vault:1.17.3"
+#             command: ["/bin/sh", "-c"]
+#             args:
+#               - |
+#                 set -e
+#                 echo "[INIT] Waiting for Vault..."
+#                 until vault status; do sleep 2; done
                 
-                # Extract keys
-                UNSEAL_KEY=$(jq -r '.unseal_keys_b64[0]' /vault/data/init.json)
-                ROOT_TOKEN=$(jq -r '.root_token' /vault/data/init.json)
-                
-                # Unseal vault
-                vault operator unseal $UNSEAL_KEY
-                
-                # Login and configure
-                vault login $ROOT_TOKEN
-                vault secrets enable -version=2 kv
-              fi
-            env:
-            - name: VAULT_ADDR
-              value: "http://vault-service:8200"
-            volumeMounts:
-            - name: vault-data
-              mountPath: /vault/data
-          restartPolicy: OnFailure
-          volumes:
-          - name: vault-data
-            persistentVolumeClaim:
-              claimName: vault-data
----
+#                 echo "[INIT] Checking initialization status..."
+#                 if ! vault status | grep -q "Initialized.*true"; then
+#                   echo "[INIT] Initializing Vault..."
+#                   vault operator init -format=json > /vault-init/init.json
+
+#                   UNSEAL_KEY=$(jq -r '.unseal_keys_b64[0]' /vault-init/init.json)
+#                   ROOT_TOKEN=$(jq -r '.root_token' /vault-init/init.json)
+
+#                   echo "[INIT] Unsealing Vault..."
+#                   vault operator unseal $UNSEAL_KEY
+
+#                   echo "[INIT] Logging in to Vault..."
+#                   vault login $ROOT_TOKEN
+
+#                   echo "[INIT] Enabling KV secrets engine..."
+#                   vault secrets enable -version=2 kv
+#                 else
+#                   echo "[INIT] Vault already initialized"
+#                 fi
+#             env:
+#             - name: VAULT_ADDR
+#               value: "http://vault-service:8200"
+#             volumeMounts:
+#             - name: vault-init-mem
+#               mountPath: /vault-init
+#           volumes:
+#           - name: vault-init-mem
+#             emptyDir:
+#               medium: Memory
+
 apiVersion: v1
 kind: Service
 metadata:
@@ -195,4 +231,132 @@ spec:
     port: 8100
     targetPort: 8100
     protocol: TCP
-  type: ClusterIP 
+  type: ClusterIP
+
+# ---
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: vault-data
+# spec:
+#   accessModes:
+#     - ReadWriteOnce
+#   resources:
+#     requests:
+#       storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vault-agent-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 512Mi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vault-logs
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 512Mi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-config
+  labels:
+    app: vault
+  annotations:
+    description: Basic Vault server config
+    created-by: vault-admin
+    managed-by: user
+    purpose: vault
+data:
+  vault.hcl: |
+    storage "file" {
+      path = "/vault/data"
+    }
+
+    listener "tcp" {
+      address     = "0.0.0.0:8200"
+      tls_disable = 1
+    }
+
+    disable_mlock = true
+    ui = true
+
+    api_addr = "http://0.0.0.0:8200"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-agent-config
+  labels:
+    app: vault-agent
+  annotations:
+    description: Vault Agent config
+    created-by: vault-admin
+    managed-by: user
+    purpose: agent
+data:
+  vault-agent.hcl: |
+    pid_file = "/vault/agent/pidfile"
+
+    listener "tcp" {
+      address     = "127.0.0.1:8100"
+      tls_disable = true
+    }
+
+    auto_auth {
+      method "approle" {
+        mount_path = "auth/approle"
+        config = {
+          role_id_file_path = "/vault/agent/role_id"
+          secret_id_file_path = "/vault/agent/secret_id"
+        }
+      }
+
+      sink "file" {
+        config = {
+          path = "/vault/agent/token"
+        }
+      }
+    }
+
+    vault {
+      address = "http://vault-service:8200"
+    }
+
+    cache {
+      use_auto_auth_token = true
+    }
+
+    template {
+      source      = "/vault/config/templates/dummy.tpl"
+      destination = "/vault/agent/rendered/dummy.txt"
+    }
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-templates
+  labels:
+    app: vault-agent
+  annotations:
+    description: Placeholder for vault agent template rendering
+    created-by: vault-admin
+    managed-by: user
+    purpose: template
+data:
+  dummy.tpl: |
+    {{ with secret "secret/data/dummy" }}
+    Dummy key: {{ .Data.data.key }}
+    {{ end }}

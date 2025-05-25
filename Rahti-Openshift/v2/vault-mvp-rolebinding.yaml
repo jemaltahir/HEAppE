@@ -1,0 +1,11 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vault-mvp-rb
+subjects:
+- kind: ServiceAccount
+  name: vault-mvp-sa
+roleRef:
+  kind: Role
+  name: vault-mvp-role
+  apiGroup: rbac.authorization.k8s.io

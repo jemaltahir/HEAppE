@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault-server
+  labels:
+    app: vault
+    component: server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vault
+      component: server
+  template:
+    metadata:
+      labels:
+        app: vault
+        component: server
+    spec:
+      serviceAccountName: vault-mvp-sa
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: vault
+        image: "image-registry.openshift-image-registry.svc:5000/heappe-dev/hashicorp-vault:1.17.3"
+        command: ["vault"]
+        args: ["server", "-config=/vault/config/vault.hcl", "-log-level=debug"]
+        ports:
+        - containerPort: 8200
+          name: http-api
+          protocol: TCP
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: data
+          mountPath: /vault/data
+        - name: config
+          mountPath: /vault/config
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        readinessProbe:
+          httpGet:
+            path: /v1/sys/health?sealedcode=503
+            port: http-api
+            scheme: HTTP
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 5 # <--- INCREASED FROM 1 to 5
+        livenessProbe:
+          failureThreshold: 6
+          httpGet:
+            path: /v1/sys/health?uninitcode=204&sealedcode=204&standbycode=204&performancestandbycode=204
+            port: http-api
+            scheme: HTTP
+          initialDelaySeconds: 45
+          periodSeconds: 15
+          successThreshold: 1
+          timeoutSeconds: 5
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: vault-server-data
+      - name: config
+        configMap:
+          name: vault-server-config
+      - name: tmp
+        emptyDir: {}

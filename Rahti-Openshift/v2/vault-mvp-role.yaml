@@ -1,0 +1,14 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vault-mvp-role
+rules:
+- apiGroups: [""] # Core API group
+  resources: ["secrets"]
+  verbs: ["get", "create", "update", "patch"] # For init job to manage vault-keys secret
+- apiGroups: [""]
+  resources: ["pods", "pods/log"] # For jobs to see logs if needed, and for Vault K8s auth later
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["serviceaccounts"] # Potentially for K8s auth token review if Vault K8s auth is set up
+  verbs: ["get", "list"]

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-service # This is the name other components will use
+  labels:
+    app: vault
+    component: server
+spec:
+  selector:
+    app: vault
+    component: server # Must match labels on the Vault server Pods
+  ports:
+  - name: http-api
+    port: 8200        # Service port
+    targetPort: http-api # Target port name on the pod
+    protocol: TCP
+  type: ClusterIP     # Internal service

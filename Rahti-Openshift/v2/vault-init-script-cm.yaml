@@ -1,0 +1,110 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-init-script
+data:
+  init-vault.sh: |
+    #!/bin/sh
+    set -e 
+    echo '[vault-init] Initializer script starting (using curl, jq, base64 from custom image)...'
+
+    VAULT_ADDR_FOR_SCRIPT="http://vault-service:8200"
+    K8S_SECRET_NAME="vault-keys"
+    K8S_API_HOST="https://kubernetes.default.svc"
+    K8S_SA_TOKEN_PATH="/var/run/secrets/kubernetes.io/serviceaccount/token"
+    K8S_SA_CACERT_PATH="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+    if [ -f /var/run/secrets/kubernetes.io/serviceaccount/namespace ]; then
+      NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+    else
+      echo "[vault-init] Error: Namespace file not found."
+      exit 1
+    fi
+    echo "[vault-init] Operating in namespace: $NAMESPACE"
+
+    echo "[vault-init] Checking Vault status..."
+    HTTP_STATUS_CODE=$(curl -s -o /tmp/health_body.txt -w "%{http_code}" --connect-timeout 5 "$VAULT_ADDR_FOR_SCRIPT/v1/sys/health")
+    HEALTH_RESPONSE_BODY=$(cat /tmp/health_body.txt)
+    
+    if ! echo "$HTTP_STATUS_CODE" | grep -qE '^[2345][0-9]{2}$'; then
+        echo "[vault-init] Error: Failed to get a valid HTTP status from Vault at $VAULT_ADDR_FOR_SCRIPT."
+        echo "[vault-init] curl exit code was $? (if non-zero, connection likely failed)"
+        exit 1
+    fi
+    echo "[vault-init] Vault health check HTTP status: $HTTP_STATUS_CODE"
+    echo "[vault-init] Vault health response body: $HEALTH_RESPONSE_BODY"
+
+    if [ -z "$HEALTH_RESPONSE_BODY" ] && [ "$HTTP_STATUS_CODE" != "204" ]; then
+        echo "[vault-init] Error: Got status $HTTP_STATUS_CODE but no response body from Vault."
+        exit 1
+    fi
+
+    # Use jq to parse .initialized from the response body
+    INIT_STATUS=$(echo "$HEALTH_RESPONSE_BODY" | jq -r .initialized)
+
+    if [ "$INIT_STATUS" = "true" ]; then
+      echo "[vault-init] Vault already initialized."
+      SECRET_CHECK_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+        --header "Authorization: Bearer $(cat $K8S_SA_TOKEN_PATH)" \
+        --cacert "$K8S_SA_CACERT_PATH" \
+        "$K8S_API_HOST/api/v1/namespaces/$NAMESPACE/secrets/$K8S_SECRET_NAME")
+
+      if [ "$SECRET_CHECK_CODE" = "200" ]; then
+        echo "[vault-init] Secret $K8S_SECRET_NAME already exists. Exiting."
+        exit 0
+      else
+        echo "[vault-init] Vault is initialized, but secret $K8S_SECRET_NAME not found. K8s API HTTP Status: $SECRET_CHECK_CODE"
+        exit 1
+      fi
+    fi
+
+    echo "[vault-init] Initializing Vault..."
+    INIT_RESPONSE=$(vault operator init -address="$VAULT_ADDR_FOR_SCRIPT" -key-shares=1 -key-threshold=1 -format=json)
+
+    if [ -z "$INIT_RESPONSE" ]; then
+      echo "[vault-init] Error: Vault init command failed or returned empty."
+      exit 1
+    fi
+
+    ROOT_TOKEN=$(echo "$INIT_RESPONSE" | jq -r '.root_token')
+    UNSEAL_KEY_1=$(echo "$INIT_RESPONSE" | jq -r '.unseal_keys_b64[0]')
+
+    # Use base64 command (should be available from coreutils or busybox)
+    if ! command -v base64 &> /dev/null; then
+        echo "[vault-init] Error: base64 command not found!"
+        exit 1
+    fi
+
+    if [ -z "$ROOT_TOKEN" ] || [ "$ROOT_TOKEN" = "null" ] || [ -z "$UNSEAL_KEY_1" ] || [ "$UNSEAL_KEY_1" = "null" ]; then
+      echo "[vault-init] Error: Missing root token or unseal key from init response."
+      exit 1
+    fi
+
+    echo "[vault-init] Creating Kubernetes Secret $K8S_SECRET_NAME..."
+    ROOT_TOKEN_B64=$(echo -n "$ROOT_TOKEN" | base64)
+    UNSEAL_KEY_1_B64=$(echo -n "$UNSEAL_KEY_1" | base64)
+
+    SECRET_PAYLOAD="{\"apiVersion\": \"v1\", \"kind\": \"Secret\", \"metadata\": {\"name\": \"$K8S_SECRET_NAME\", \"namespace\": \"$NAMESPACE\", \"labels\": {\"app\": \"vault\", \"component\": \"keys\"}}, \"type\": \"Opaque\", \"data\": {\"root_token\": \"$ROOT_TOKEN_B64\", \"unseal_key_1\": \"$UNSEAL_KEY_1_B64\"}}"
+    
+    CREATE_CODE=$(curl -s -o /tmp/api_create_secret_response.txt -w "%{http_code}" \
+      --header "Authorization: Bearer $(cat $K8S_SA_TOKEN_PATH)" \
+      --header "Content-Type: application/json" \
+      --cacert "$K8S_SA_CACERT_PATH" \
+      -X POST \
+      -d "$SECRET_PAYLOAD" \
+      "$K8S_API_HOST/api/v1/namespaces/$NAMESPACE/secrets")
+
+    if [ "$CREATE_CODE" = "201" ]; then
+      echo "[vault-init] Secret $K8S_SECRET_NAME created successfully."
+    elif [ "$CREATE_CODE" = "409" ]; then
+      echo "[vault-init] Secret $K8S_SECRET_NAME already exists (HTTP 409)."
+    else
+      echo "[vault-init] Failed to create secret $K8S_SECRET_NAME (HTTP $CREATE_CODE)"
+      echo "[vault-init] Response body from K8s API (if any):"
+      cat /tmp/api_create_secret_response.txt
+      exit 1
+    fi
+
+    echo "[vault-init] Vault initialized and secret operation completed."
+    echo "[vault-init] You must now unseal Vault manually or via automation."
+    exit 0
