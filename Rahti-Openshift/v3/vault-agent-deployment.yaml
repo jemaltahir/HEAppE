@@ -1,0 +1,47 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault-agent
+  labels:
+    app: vault-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vault-agent
+  template:
+    metadata:
+      labels:
+        app: vault-agent
+    spec:
+      containers:
+        - name: vault-agent
+          image: hashicorp/vault:1.17.3
+          command:
+            - "vault"
+            - "agent"
+            - "-config=/vault/config/vault-agent.hcl"
+            - "-log-level=info"
+          ports:
+            - name: agent
+              containerPort: 8100
+          volumeMounts:
+            - name: agent-config
+              mountPath: /vault/config
+            - name: agent-data
+              mountPath: /vault/agent
+          resources:
+            requests:
+              cpu:    "50m"
+              memory: "128Mi"
+            limits:
+              cpu:    "250m"
+              memory: "256Mi"
+      volumes:
+        - name: agent-config
+          configMap:
+            name: vault-agent-config-cm
+        - name: agent-data
+          emptyDir: {}
+

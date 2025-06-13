@@ -1,0 +1,30 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-agent-config-cm
+data:
+  vault-agent.hcl: |
+    pid_file        = "/tmp/vault-agent.pid"
+    exit_after_auth = false
+
+    auto_auth {
+      method "approle" {
+        mount_path = "auth/approle"
+        config = {
+          role_id_file_path   = "/vault/agent/role_id"
+          secret_id_file_path = "/vault/agent/secret_id"
+        }
+      }
+      sink "file" {
+        config = {
+          path = "/vault/agent/token"
+        }
+      }
+    }
+
+    vault {
+      address         = "http://vault-svc:8200"
+      tls_skip_verify = true
+    }
+

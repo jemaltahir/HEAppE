@@ -1,0 +1,116 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: heappe-config
+  labels: 
+    app: config 
+data:
+  TZ: Europe/Prague
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: datastaging-sftp
+  labels: 
+    app: datastagingapi 
+spec:
+  accessModes: 
+    - ReadWriteOnce
+  resources:
+    requests: 
+      storage: 1Gi 
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: datastagingapi
+  labels: 
+    app: datastagingapi 
+spec:
+  replicas: 1
+  selector: 
+    matchLabels: 
+      app: datastagingapi 
+  template:
+    metadata: 
+      labels: 
+        app: datastagingapi
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext: 
+        fsGroupChangePolicy: OnRootMismatch 
+      volumes:
+        - name: sftp
+          persistentVolumeClaim: 
+            claimName: datastaging-sftp 
+        - name: app-confs
+          configMap:
+            name: heappe-confs
+      containers:
+        - name: api
+          image: "image-registry.openshift-image-registry.svc:5000/heappe-dev/datastagingapi:latest"
+          ports: 
+            - containerPort: 8080 
+              name: http
+          env:
+            - name: ASPNETCORE_RUNTYPE_ENVIRONMENT
+              value: "Docker"
+            - name: ASPNETCORE_URLS
+              value: "http://0.0.0.0:8080"
+            - name: TZ
+              valueFrom: 
+                configMapKeyRef: 
+                  name: heappe-config
+                  key: TZ 
+          volumeMounts:
+            - name: sftp
+              mountPath: /sftp 
+            - name: app-confs
+              mountPath: /opt/heappe/confs
+              readOnly: true
+          resources:
+            requests: 
+              cpu: "200m"
+              memory: "512Mi" 
+            limits:   
+              cpu: "500m"
+              memory: "1Gi" 
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: 
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: datastagingapi
+  labels: 
+    app: datastagingapi 
+spec:
+  selector: 
+    app: datastagingapi 
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+  type: ClusterIP
+
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: datastagingapi
+  labels: 
+    app: datastagingapi 
+spec:
+  to: 
+    kind: Service
+    name: datastagingapi
+  port: 
+    targetPort: http
+  tls:
+    termination: edge 

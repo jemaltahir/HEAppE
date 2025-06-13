@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault
+  labels:
+    app: vault
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels:
+      app: vault
+  template:
+    metadata:
+      labels:
+        app: vault
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+
+      volumes:
+        - name: vault-data
+          persistentVolumeClaim:
+            claimName: vault-data-pvc
+        - name: vault-config
+          configMap:
+            name: vault-config-cm
+        - name: vault-keys
+          secret:
+            secretName: vault-keys
+            optional: true
+
+      containers:
+        # ─── Vault server ───
+        - name: vault
+          image: image-registry.openshift-image-registry.svc:5000/test-heappe-app/vault-helper:latest
+          command: ["vault"]
+          args: ["server", "-config=/vault/config/vault.hcl", "-log-level=debug"]
+          env:
+            - name: VAULT_ADDR
+              value: "http://127.0.0.1:8200"
+            - name: VAULT_API_ADDR
+              value: "http://vault-svc:8200"
+          volumeMounts:
+            - name: vault-data
+              mountPath: /vault/data
+            - name: vault-config
+              mountPath: /vault/config
+
+        # ─── Bootstrap side-car ───
+        - name: vault-bootstrap
+          image: image-registry.openshift-image-registry.svc:5000/test-heappe-app/vault-helper:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              echo "[bootstrap] started"
+
+              KEY_FILE=/vault/keys/unseal_key
+              TOK_FILE=/vault/keys/root_token
+
+              echo "[bootstrap] waiting for TCP 8200 ..."
+              until nc -z 127.0.0.1 8200; do sleep 2; done
+              echo "[bootstrap] listener ready"
+
+              export VAULT_ADDR=http://127.0.0.1:8200
+
+              if [[ ! -s "$KEY_FILE" ]]; then
+                echo "[bootstrap] ERROR: Missing unseal_key in vault-keys secret" >&2
+                exit 1
+              fi
+
+              echo "[bootstrap] Loaded unseal_key: $(sha256sum "$KEY_FILE" | cut -d' ' -f1)"
+              SEALED="true"
+
+              for i in {1..5}; do
+                SEALED=$(vault status -format=json 2>/dev/null | jq -r '.sealed' || echo "true")
+                if [[ "$SEALED" == "false" ]]; then
+                  echo "[bootstrap] Vault already unsealed"
+                  break
+                fi
+                echo "[bootstrap] unsealing Vault (attempt $i)..."
+                vault operator unseal "$(cat "$KEY_FILE")" || true
+                sleep 3
+              done
+
+              SEALED=$(vault status -format=json 2>/dev/null | jq -r '.sealed' || echo "true")
+              if [[ "$SEALED" == "true" ]]; then
+                echo "[bootstrap] ERROR: Vault is still sealed after attempts" >&2
+                exit 1
+              fi
+
+              if [[ -s "$TOK_FILE" ]]; then
+                echo "[bootstrap] Loaded root_token: $(cat "$TOK_FILE" | cut -c1-7)..."
+                TOKEN=$(cat "$TOK_FILE")
+                if ! VAULT_TOKEN="$TOKEN" vault secrets list -format=json | jq '."kv/"' >/dev/null 2>&1; then
+                  echo "[bootstrap] enabling KV v2 ..."
+                  VAULT_TOKEN="$TOKEN" vault secrets enable -version=2 -path=kv kv || {
+                    echo "[bootstrap] ERROR: Failed to enable KV v2" >&2
+                    exit 1
+                  }
+                else
+                  echo "[bootstrap] KV v2 already enabled"
+                fi
+              else
+                echo "[bootstrap] WARNING: root_token not found, skipping KV enable"
+              fi
+
+              echo "[bootstrap] done — idling"
+              tail -f /dev/null
+          volumeMounts:
+            - name: vault-data
+              mountPath: /vault/data
+            - name: vault-config
+              mountPath: /vault/config
+            - name: vault-keys
+              mountPath: /vault/keys
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

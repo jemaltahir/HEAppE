@@ -1,0 +1,154 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: heappe-sftp
+  labels: 
+    app: heappe 
+spec:
+  accessModes: 
+    - ReadWriteOnce
+  resources:
+    requests: 
+      storage: 1Gi 
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: heappe
+  labels: 
+    app: heappe 
+spec:
+  replicas: 1
+  strategy: 
+    type: Recreate 
+  selector: 
+    matchLabels: 
+      app: heappe 
+  template:
+    metadata: 
+      labels: 
+        app: heappe 
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext: 
+        fsGroupChangePolicy: OnRootMismatch 
+
+      volumes:
+        - name: agent-sock
+          emptyDir: 
+            medium: "Memory" 
+        - name: sftp
+          persistentVolumeClaim: 
+            claimName: heappe-sftp 
+        - name: sshkeys
+          secret:
+            secretName: sshagent-keys
+            defaultMode: 0400
+        - name: app-confs
+          configMap:
+            name: heappe-confs
+
+      containers:
+      - name: sshagent
+        image: "image-registry.openshift-image-registry.svc:5000/heappe-dev/sshagent:ocp3"
+        env:
+          - name: SSH_AUTH_SOCK
+            value: "/app/shared/agentsocket" 
+          - name: TZ
+            valueFrom: 
+              configMapKeyRef: 
+                name: heappe-config
+                key: TZ 
+        volumeMounts:
+          - name: agent-sock
+            mountPath: /app/shared 
+          - name: sshkeys
+            mountPath: /opt/heappe/sshagent_keys
+            readOnly: true 
+        resources:
+          requests: 
+            cpu: "50m"
+            memory: "64Mi" 
+          limits:   
+            cpu: "200m"
+            memory: "256Mi" 
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: 
+            drop: ["ALL"] 
+
+      - name: heappe-api
+        image: "image-registry.openshift-image-registry.svc:5000/heappe-dev/heappe-api:latest"
+        ports:
+          - name: http
+            containerPort: 8080
+        env:
+          - name: ASPNETCORE_RUNTYPE_ENVIRONMENT
+            value: "Docker" 
+          - name: ASPNETCORE_URLS
+            value: "http://0.0.0.0:8080"
+          - name: DOTNET_URLS
+            value: "http://0.0.0.0:8080"
+          - name: SSH_AUTH_SOCK
+            value: "/app/shared/agentsocket" 
+          - name: TZ
+            valueFrom: 
+              configMapKeyRef: 
+                name: heappe-config
+                key: TZ 
+        volumeMounts:
+          - name: agent-sock
+            mountPath: /app/shared 
+          - name: sftp
+            mountPath: /sftp 
+          - name: app-confs
+            mountPath: /opt/heappe/confs/appsettings.json
+            subPath: appsettings.json
+            readOnly: true
+          - name: app-confs
+            mountPath: /opt/heappe/confs/seed.njson
+            subPath: seed.njson
+            readOnly: true
+        resources:
+          requests: 
+            cpu: "300m"
+            memory: "512Mi" 
+          limits:   
+            cpu: "1"
+            memory: "1Gi" 
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: 
+            drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: heappe
+  labels: 
+    app: heappe 
+spec:
+  selector: 
+    app: heappe 
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: heappe
+  labels: 
+    app: heappe 
+spec:
+  to: 
+    kind: Service
+    name: heappe
+  port: 
+    targetPort: http 
+  tls: 
+    termination: edge 

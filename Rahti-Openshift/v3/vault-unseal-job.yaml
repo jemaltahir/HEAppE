@@ -1,0 +1,18 @@
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vault-unseal
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: vault-unseal
+        image: image-registry.openshift-image-registry.svc:5000/<your-project>/vault-helper:latest
+        command: ["/opt/unsealOrInitHVault.sh"]
+        env:
+        - name: VAULT_ADDR
+          value: "http://vault:8200"
+        # Mount secrets or config as needed
+

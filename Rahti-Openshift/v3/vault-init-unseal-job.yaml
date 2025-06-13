@@ -1,0 +1,61 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vault-init-unseal
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        job-name: vault-init-unseal
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+      containers:
+      - name: vault-init
+        image: image-registry.openshift-image-registry.svc:5000/test-heappe-app/vault-helper:latest
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        command:
+          - /bin/bash
+          - -c
+          - |
+            set -euo pipefail
+            VAULT_ADDR="http://vault-svc:8200"
+            INIT_FILE=/vault/data/init.json
+
+            echo "[job] Waiting for Vault listener..."
+            until curl -sf "${VAULT_ADDR}/v1/sys/health"; do sleep 2; done
+
+            echo "[job] Initializing Vault..."
+            vault operator init -address="${VAULT_ADDR}" \
+              -key-shares=1 -key-threshold=1 -format=json > "${INIT_FILE}"
+            chmod 600 "${INIT_FILE}"
+
+            UKEY=$(jq -r '.unseal_keys_b64[0]' "${INIT_FILE}")
+            RTOKEN=$(jq -r '.root_token'     "${INIT_FILE}")
+
+            echo "[job] Unsealing Vault..."
+            vault operator unseal -address="${VAULT_ADDR}" "${UKEY}"
+
+            echo "[job] Logging in with root token (no-store)..."
+            vault login -address="${VAULT_ADDR}" -no-store "${RTOKEN}"
+            export VAULT_TOKEN="${RTOKEN}"
+
+            echo "[job] Enabling KV v2..."
+            vault secrets enable -address="${VAULT_ADDR}" -version=2 kv
+
+            echo "[job] Vault init/unseal complete."
+        env:
+          - name: VAULT_ADDR
+            value: "http://vault-svc:8200"
+        volumeMounts:
+          - name: vault-data
+            mountPath: /vault/data
+      volumes:
+      - name: vault-data
+        persistentVolumeClaim:
+          claimName: vault-data-pvc

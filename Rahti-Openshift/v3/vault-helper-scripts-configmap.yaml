@@ -1,0 +1,32 @@
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vault-init-unseal-job
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: vault-helper
+        image: image-registry.openshift-image-registry.svc:5000/your-project/vault-helper:latest
+        command:
+        - "/bin/bash"
+        - "/opt/unsealOrInitHVault.sh"
+        env:
+        - name: VAULT_ADDR
+          value: "http://vault-svc:8200"
+        volumeMounts:
+        - name: helper-scripts
+          mountPath: /opt
+        - name: vault-data
+          mountPath: /opt/keys
+      volumes:
+      - name: helper-scripts
+        configMap:
+          name: vault-helper-scripts-cm
+      - name: vault-data
+        persistentVolumeClaim:
+          claimName: vault-data-pvc
+
